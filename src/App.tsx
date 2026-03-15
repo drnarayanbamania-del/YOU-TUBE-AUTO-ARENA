@@ -1938,19 +1938,20 @@ export function App() {
         try {
           narrationAudio = await loadAudioElement(workingProject.voiceAudioUrl);
           narrationAudio.crossOrigin = "anonymous";
-          narrationAudio.volume = 1;
-          narrationAudio.currentTime = 0;
-          narrationAudio.muted = false;
-          const audioWithCapture = narrationAudio as HTMLAudioElement & { captureStream?: () => MediaStream };
-          if (typeof audioWithCapture.captureStream === "function") {
-            const narrationStream = audioWithCapture.captureStream();
-            audioTracks = narrationStream.getAudioTracks();
-            if (audioTracks.length) {
-              finalStream = new MediaStream([...videoStream.getVideoTracks(), ...audioTracks]);
-              narrationEmbedded = true;
-            }
+          
+          const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+          const source = audioCtx.createMediaElementSource(narrationAudio);
+          const destination = audioCtx.createMediaStreamDestination();
+          source.connect(destination);
+          source.connect(audioCtx.destination);
+          
+          audioTracks = destination.stream.getAudioTracks();
+          if (audioTracks.length) {
+            finalStream = new MediaStream([...videoStream.getVideoTracks(), ...audioTracks]);
+            narrationEmbedded = true;
           }
-        } catch {
+        } catch (error) {
+          console.error("Audio embedding failed:", error);
           narrationEmbedded = false;
         }
       }
@@ -2089,31 +2090,19 @@ export function App() {
       }
 
       if (!browserVoiceSupported) {
-        setNotice("Sarvam AI is unavailable and browser voice support was not found.");
+        setNotice("Sarvam AI server key is missing and browser voice support was not found.");
         return false;
       }
 
-      const data = {
-        scriptTitle: project.scriptTitle,
-        text,
-        language: settings.voice.language,
-        rate: settings.voice.rate,
-        pitch: settings.voice.pitch,
-        voiceName: preferredVoice?.name ?? "Browser Hindi Voice",
-        provider: "browser-fallback",
-        generatedAt: new Date().toISOString(),
-      };
-      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json;charset=utf-8" });
-      const voiceAudioUrl = URL.createObjectURL(blob);
-
+      // Browser fallback: We don't have a real audio file, so we mark it as ready for browser preview
       setProjects((current) =>
         current.map((entry) =>
           entry.id === project.id
             ? {
                 ...entry,
                 voiceText: text,
-                voiceAudioUrl,
-                voiceMimeType: blob.type,
+                voiceAudioUrl: undefined,
+                voiceMimeType: "text/browser-speech",
                 exports: {
                   ...entry.exports,
                   voice: true,
@@ -2123,8 +2112,11 @@ export function App() {
         ),
       );
 
-      setNotice(`Sarvam AI was unavailable, so a browser Hindi voice package was prepared for “${project.scriptTitle}”.`);
+      setNotice(`Sarvam AI was unavailable, so the app will use the browser Hindi voice engine for “${project.scriptTitle}”.`);
       return true;
+    } catch (error) {
+      setNotice(`Voice generation failed: ${error instanceof Error ? error.message : "unknown error"}.`);
+      return false;
     } finally {
       setIsGeneratingVoice(false);
     }
