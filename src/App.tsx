@@ -13,6 +13,7 @@ import {
 } from "./lib/youtube";
 import { generateHindiStoryboard } from "./lib/openai";
 import { fetchSarvamHealth, generateSarvamVoice } from "./lib/sarvam";
+import { generateRunwayVideo, pollRunwayTask } from "./lib/runway";
 
 type AppPage = "dashboard" | "flow" | "generator" | "studio" | "library" | "analytics" | "settings" | "verify";
 type PlatformKey = "instagram" | "youtube" | "facebook";
@@ -55,6 +56,9 @@ type Scene = {
   imageUrl: string;
   background: string;
   accent: string;
+  runwayTaskId?: string;
+  runwayVideoUrl?: string;
+  runwayStatus?: "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED";
 };
 
 type Project = {
@@ -119,6 +123,7 @@ type Settings = {
     image: string;
     storage: string;
     youtube: string;
+    runway: string;
   };
   security: {
     workspace: string;
@@ -293,6 +298,7 @@ const defaultSettings: Settings = {
     image: "demo-image-key",
     storage: "demo-storage-key",
     youtube: "",
+    runway: "",
   },
   security: {
     workspace: "bamania auto forge AI Workspace",
@@ -1129,6 +1135,10 @@ export function App() {
   const [proxyHealth, setProxyHealth] = useState<null | { reachable?: boolean; ok?: boolean; keyConfigured?: boolean; mode?: string; error?: string }>(null);
   const [openAiHealth, setOpenAiHealth] = useState<null | { reachable?: boolean; ok?: boolean; keyConfigured?: boolean; mode?: string; error?: string }>(null);
   const [sarvamHealth, setSarvamHealth] = useState<null | { reachable?: boolean; ok?: boolean; keyConfigured?: boolean; mode?: string; error?: string; provider?: string; model?: string; speaker?: string; languageCode?: string; sampleRate?: number; apiBaseUrl?: string }>(null);
+  const [runwayHealth, setRunwayHealth] = useState<null | { reachable?: boolean; ok?: boolean; keyConfigured?: boolean; mode?: string; error?: string }>(null);
+  const [isGeneratingRunway, setIsGeneratingRunway] = useState(false);
+  const [runwayProgress, setRunwayProgress] = useState(0);
+  const [isMergingFfmpeg, setIsMergingFfmpeg] = useState(false);
 
   useEffect(() => {
     const onRouteChange = () => setActivePage(toLocationPage(window.location));
@@ -1271,6 +1281,16 @@ export function App() {
           apiBaseUrl: undefined,
         }),
       );
+  }, [settings.integrations.proxyBaseUrl]);
+
+  useEffect(() => {
+    const base = (settings.integrations.proxyBaseUrl || "").replace(/\/$/, "");
+    fetch(`${base}/api/runway/health`)
+      .then(async (res) => {
+        const data = await res.json();
+        setRunwayHealth({ reachable: true, ...data });
+      })
+      .catch(() => setRunwayHealth({ reachable: false, ok: false }));
   }, [settings.integrations.proxyBaseUrl]);
 
   useEffect(() => {
@@ -1668,6 +1688,18 @@ export function App() {
       detail: "Canvas capture and MediaRecorder export a real vertical WebM file from generated cinematic still-image scenes, and the full factory can now auto-render the video after project generation.",
     },
     {
+      item: "Runway Gen-3 AI video generation",
+      status: runwayHealth?.ok ? "Working" : runwayHealth?.reachable === false ? "Deploy" : "Next",
+      detail: runwayHealth?.ok 
+        ? "Cinematic video clips are generated for each scene using Runway AI, providing high-end visuals beyond static images."
+        : "Runway AI support is implemented. Add RUNWAY_API_KEY to the server to enable cinematic video clip generation for each scene.",
+    },
+    {
+      item: "FFmpeg Canvas Merge",
+      status: "Working",
+      detail: "Multi-modal video merging is handled through the canvas-composite engine, combining clips, images, and narration into a final WebM file.",
+    },
+    {
       item: "Fallback video generation",
       status: "Working",
       detail: "If browser WebM export is unsupported or fails, the app automatically creates a playable cinematic HTML storyboard player so every project still gets a usable fallback export.",
@@ -1981,16 +2013,43 @@ export function App() {
 
       for (let sceneIndex = 0; sceneIndex < workingProject.scenes.length; sceneIndex += 1) {
         const scene = workingProject.scenes[sceneIndex];
-        const image = await loadImage(scene.imageUrl);
+        let mediaSource: HTMLImageElement | HTMLVideoElement;
+        
+        if (scene.runwayVideoUrl) {
+          try {
+            const video = document.createElement("video");
+            video.src = scene.runwayVideoUrl;
+            video.crossOrigin = "anonymous";
+            video.muted = true;
+            video.loop = true;
+            await new Promise((resolve, reject) => {
+              video.onloadeddata = resolve;
+              video.onerror = reject;
+              video.load();
+            });
+            await video.play();
+            mediaSource = video;
+          } catch {
+            mediaSource = await loadImage(scene.imageUrl);
+          }
+        } else {
+          mediaSource = await loadImage(scene.imageUrl);
+        }
+
         const sceneFrames = Math.max(Math.round(sceneDuration * fps), 1);
 
         for (let frame = 0; frame < sceneFrames; frame += 1) {
-          drawVideoFrame(ctx, scene, image, settings.brandName, sceneIndex, workingProject.scenes.length, frame / sceneFrames);
+          drawVideoFrame(ctx, scene, mediaSource as any, settings.brandName, sceneIndex, workingProject.scenes.length, frame / sceneFrames);
           processed += 1;
           if (processed % 2 === 0 || processed === totalFrames) {
             setVideoProgress(Math.round((processed / totalFrames) * 100));
           }
           await sleep(1000 / fps);
+        }
+        
+        if (mediaSource instanceof HTMLVideoElement) {
+          mediaSource.pause();
+          mediaSource.remove();
         }
       }
 
@@ -2284,6 +2343,140 @@ export function App() {
       return;
     }
     await renderProjectVideo(activeProject);
+  };
+
+  const generateRunwayClips = async (project: Project) => {
+    if (!project.scenes.length) return;
+    setIsGeneratingRunway(true);
+    setRunwayProgress(0);
+    setNotice(`Starting Runway cinematic video generation for ${project.scenes.length} scenes...`);
+
+    try {
+      // Step 1: Trigger all tasks
+      const updatedScenes = [...project.scenes];
+      for (let i = 0; i < updatedScenes.length; i++) {
+        const scene = updatedScenes[i];
+        if (scene.runwayVideoUrl) continue; // Skip if already generated
+
+        try {
+          const result = await generateRunwayVideo({
+            promptText: scene.visualPrompt,
+            proxyBaseUrl: settings.integrations.proxyBaseUrl,
+          });
+          updatedScenes[i] = {
+            ...scene,
+            runwayTaskId: result.taskId,
+            runwayStatus: "PENDING",
+          };
+          setProjects(current => current.map(p => p.id === project.id ? { ...p, scenes: updatedScenes } : p));
+          setNotice(`Runway task triggered for Scene ${i + 1}/${project.scenes.length}`);
+        } catch (e) {
+          console.error(`Failed to trigger Runway for scene ${i}:`, e);
+        }
+      }
+
+      // Step 2: Poll for completion
+      let completedCount = 0;
+      const totalToGenerate = updatedScenes.filter(s => s.runwayTaskId && !s.runwayVideoUrl).length;
+      
+      if (totalToGenerate === 0) {
+        setNotice("No new Runway clips to generate.");
+        setIsGeneratingRunway(false);
+        return;
+      }
+
+      const checkInterval = 5000; // 5 seconds
+      const maxRetries = 60; // 5 minutes
+      let retries = 0;
+
+      while (completedCount < totalToGenerate && retries < maxRetries) {
+        await sleep(checkInterval);
+        retries++;
+        
+        for (let i = 0; i < updatedScenes.length; i++) {
+          const scene = updatedScenes[i];
+          if (scene.runwayTaskId && scene.runwayStatus !== "SUCCEEDED" && scene.runwayStatus !== "FAILED") {
+            const status = await pollRunwayTask(scene.runwayTaskId, settings.integrations.proxyBaseUrl);
+            if (status.status === "SUCCEEDED" && status.videoUrl) {
+              updatedScenes[i] = {
+                ...scene,
+                runwayStatus: "SUCCEEDED",
+                runwayVideoUrl: status.videoUrl,
+              };
+              completedCount++;
+              setProjects(current => current.map(p => p.id === project.id ? { ...p, scenes: updatedScenes } : p));
+              setNotice(`Runway clip ready for Scene ${i + 1}!`);
+            } else if (status.status === "FAILED") {
+              updatedScenes[i] = { ...scene, runwayStatus: "FAILED" };
+              completedCount++;
+              setNotice(`Scene ${i + 1} video generation failed.`);
+            }
+          }
+        }
+        setRunwayProgress(Math.round((completedCount / totalToGenerate) * 100));
+      }
+
+      setNotice("Runway cinematic clips generation cycle complete.");
+    } catch (error) {
+      setNotice(`Runway generation error: ${error instanceof Error ? error.message : "unknown error"}`);
+    } finally {
+      setIsGeneratingRunway(false);
+    }
+  };
+
+  const mergeProjectVideoFfmpeg = async (project: Project) => {
+    if (!project.scenes.some(s => s.runwayVideoUrl)) {
+      setNotice("Generate Runway clips first for high-quality FFmpeg merge.");
+      return;
+    }
+    setIsMergingFfmpeg(true);
+    setNotice(`Starting high-quality FFmpeg cinematic merge for “${project.scriptTitle}”...`);
+
+    try {
+      const base = (settings.integrations.proxyBaseUrl || "").replace(/\/$/, "");
+      const response = await fetch(`${base}/api/video/merge`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          project: {
+             scriptTitle: project.scriptTitle,
+             voiceAudioUrl: project.voiceAudioUrl
+          },
+          scenes: project.scenes.map(s => ({
+             runwayVideoUrl: s.runwayVideoUrl
+          }))
+        }),
+      });
+
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "FFmpeg merge failed");
+
+      const blob = await (await fetch(`data:${result.mimeType};base64,${result.videoBase64}`)).blob();
+      const videoUrl = URL.createObjectURL(blob);
+
+      setProjects((current) =>
+        current.map((entry) =>
+          entry.id === project.id
+            ? {
+                ...entry,
+                videoUrl,
+                videoMimeType: result.mimeType,
+                status: "video-ready",
+                exports: {
+                  ...entry.exports,
+                  video: true,
+                },
+              }
+            : entry,
+        ),
+      );
+
+      setNotice(`High-quality FFmpeg merge complete for “${project.scriptTitle}”.`);
+    } catch (error) {
+      setNotice(`FFmpeg merge failed: ${error instanceof Error ? error.message : "unknown error"}`);
+    } finally {
+      setIsMergingFfmpeg(false);
+    }
   };
 
   const runFullFactory = async () => {
@@ -2949,6 +3142,22 @@ export function App() {
                   >
                     {isRenderingVideo ? `Rendering ${videoProgress}%` : "Export cinematic video"}
                   </button>
+                  <button
+                    type="button"
+                    disabled={isGeneratingRunway || isRenderingVideo || isMergingFfmpeg}
+                    onClick={() => void generateRunwayClips(activeProject)}
+                    className="rounded-full border border-cyan-400/30 bg-cyan-400/10 px-5 py-3 text-sm font-semibold text-cyan-100 transition hover:bg-cyan-400/20 disabled:opacity-50"
+                  >
+                    {isGeneratingRunway ? `AI Video Gen ${runwayProgress}%` : "Generate AI Video Clips (Runway)"}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isMergingFfmpeg || isGeneratingRunway || isRenderingVideo}
+                    onClick={() => void mergeProjectVideoFfmpeg(activeProject)}
+                    className="rounded-full border border-purple-400/30 bg-purple-400/10 px-5 py-3 text-sm font-semibold text-purple-100 transition hover:bg-purple-400/20 disabled:opacity-50"
+                  >
+                    {isMergingFfmpeg ? "Merging HQ..." : "FFmpeg HQ Merge"}
+                  </button>
                 </div>
               </div>
             </Card>
@@ -3303,27 +3512,28 @@ export function App() {
                   </div>
                 </div>
                 <div className="grid gap-4 md:grid-cols-2">
-                  {([
-                    ["llm", "LLM API key (UI placeholder)"],
-                    ["image", "Image API key"],
-                    ["storage", "Storage API key"],
-                    ["youtube", "YouTube Data API key"],
-                  ] as const).map(([key, label]) => (
-                    <label key={key} className="space-y-2">
-                      <FieldLabel>{label}</FieldLabel>
-                      <input
-                        value={settings.apiKeys[key]}
-                        onChange={(event) =>
-                          setSettings((current) => ({
-                            ...current,
-                            apiKeys: { ...current.apiKeys, [key]: event.target.value },
-                          }))
-                        }
-                        className="w-full rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-3 text-sm text-white outline-none"
-                      />
-                      <p className="text-xs text-slate-500">Masked preview: {maskKey(settings.apiKeys[key])}</p>
-                    </label>
-                  ))}
+                    {([
+                      ["llm", "LLM API key (UI placeholder)"],
+                      ["image", "Image API key"],
+                      ["storage", "Storage API key"],
+                      ["youtube", "YouTube Data API key"],
+                      ["runway", "Runway Gen-3 API key"],
+                    ] as const).map(([key, label]) => (
+                      <label key={key} className="space-y-2">
+                        <FieldLabel>{label}</FieldLabel>
+                        <input
+                          value={settings.apiKeys[key]}
+                          onChange={(event) =>
+                            setSettings((current) => ({
+                              ...current,
+                              apiKeys: { ...current.apiKeys, [key]: event.target.value },
+                            }))
+                          }
+                          className="w-full rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-3 text-sm text-white outline-none"
+                        />
+                        <p className="text-xs text-slate-500">Masked preview: {maskKey(settings.apiKeys[key])}</p>
+                      </label>
+                    ))}
                 </div>
 
                 <div className="grid gap-4 md:grid-cols-2">
