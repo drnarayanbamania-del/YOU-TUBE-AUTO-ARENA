@@ -733,7 +733,7 @@ function loadAudioElement(src: string) {
 function drawVideoFrame(
   ctx: CanvasRenderingContext2D,
   scene: Scene,
-  image: HTMLImageElement,
+  source: HTMLImageElement | HTMLVideoElement,
   brandName: string,
   index: number,
   total: number,
@@ -749,13 +749,14 @@ function drawVideoFrame(
   ctx.fillStyle = gradient;
   ctx.fillRect(0, 0, width, height);
 
-  const scale = 1.04 + progress * 0.08;
+  const isVideo = source instanceof HTMLVideoElement;
+  const scale = isVideo ? 1.0 : 1.04 + progress * 0.08;
   const imgWidth = width * scale;
   const imgHeight = height * scale;
   const x = (width - imgWidth) / 2;
-  const y = (height - imgHeight) / 2 - progress * 36;
+  const y = isVideo ? (height - imgHeight) / 2 : (height - imgHeight) / 2 - progress * 36;
   ctx.globalAlpha = 0.9;
-  ctx.drawImage(image, x, y, imgWidth, imgHeight);
+  ctx.drawImage(source, x, y, imgWidth, imgHeight);
   ctx.globalAlpha = 1;
 
   const overlay = ctx.createLinearGradient(0, 0, 0, height);
@@ -1854,8 +1855,11 @@ export function App() {
     navigate("studio");
     if (project.scriptTitle) {
       setNotice(`Generated Hindi cinematic storyboard assets for “${targetTopic.title}”.`);
-      // Auto-trigger image generation
+      // Auto-trigger assets generation
       void generateSceneImages(project);
+      if (runwayHealth?.ok) {
+        void generateRunwayClips(project);
+      }
     }
     return project;
   };
@@ -2481,7 +2485,7 @@ export function App() {
   };
 
   const runFullFactory = async () => {
-    setNotice("Running the full cinematic factory: collect → generate → render video.");
+    setNotice("Running the full cinematic factory: collect → generate assets → render final video.");
     const ranked = await collectTopics();
     if (!ranked[0]) {
       setNotice("No ranked topics were found. Adjust the query and try again.");
@@ -2489,7 +2493,21 @@ export function App() {
     }
     const project = await generateScript(ranked[0]);
     if (!project) return;
-    await renderProjectVideo(project);
+    
+    // The asset generation is now auto-triggered in generateScript.
+    // We wait for some time for the first assets to be ready.
+    setNotice("Waiting for AI visuals to initialize...");
+    await sleep(5000);
+
+    // CRITICAL: Fetch the latest project data from state before rendering
+    // since generateScript returns a snapshot that might not have the background-generated URLs yet.
+    setProjects(current => {
+      const latestProject = current.find(p => p.id === project.id);
+      if (latestProject) {
+        void renderProjectVideo(latestProject);
+      }
+      return current;
+    });
   };
 
   const inspectChannel = async (channel: YouTubeChannel) => {
@@ -3050,16 +3068,27 @@ export function App() {
                 <div className="relative overflow-hidden rounded-[1.75rem] border border-white/10 bg-slate-950/80 p-4">
                   {activeScene ? (
                     activeScene.runwayVideoUrl ? (
-                      <video 
-                        src={activeScene.runwayVideoUrl} 
-                        autoPlay 
-                        loop 
-                        muted 
-                        playsInline
-                        className="mx-auto aspect-[9/16] max-h-[720px] rounded-[1.5rem] object-cover" 
-                      />
+                      <>
+                        <video 
+                          src={activeScene.runwayVideoUrl} 
+                          autoPlay 
+                          loop 
+                          muted 
+                          playsInline
+                          className="mx-auto aspect-[9/16] max-h-[720px] rounded-[1.5rem] object-cover" 
+                        />
+                        <div className="absolute top-8 left-8 flex items-center gap-2 rounded-full bg-cyan-500/80 px-3 py-1 text-[10px] font-bold tracking-widest text-white uppercase shadow-lg backdrop-blur-md">
+                          <span className="h-2 w-2 animate-pulse rounded-full bg-white"></span>
+                          Generative Video Live
+                        </div>
+                      </>
                     ) : (
-                      <img src={activeScene.imageUrl} alt={activeScene.title} className="mx-auto aspect-[9/16] max-h-[720px] rounded-[1.5rem] object-cover" />
+                      <>
+                        <img src={activeScene.imageUrl} alt={activeScene.title} className="mx-auto aspect-[9/16] max-h-[720px] rounded-[1.5rem] object-cover" />
+                        <div className="absolute top-8 left-8 flex items-center gap-2 rounded-full bg-amber-500/80 px-3 py-1 text-[10px] font-bold tracking-widest text-white uppercase shadow-lg backdrop-blur-md">
+                          Cinematic Image
+                        </div>
+                      </>
                     )
                   ) : null}
                   <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
