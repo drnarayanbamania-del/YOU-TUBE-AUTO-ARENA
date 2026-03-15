@@ -1679,7 +1679,7 @@ export function App() {
       item: "Voice-in-video integration",
       status: settings.voice.includeInVideo ? "Working" : "Optional",
       detail: settings.voice.includeInVideo
-        ? "When narration is enabled for the pipeline, video export attempts to auto-generate voice if needed and embed the resulting audio track into the exported cinematic WebM video."
+        ? "When narration is enabled, the pipeline auto-generates voice via Sarvam AI and embeds the audio track into the cinematic WebM export."
         : "Voice generation is available, but embedding narration into the exported video is currently turned off in Settings.",
     },
     {
@@ -3047,7 +3047,20 @@ export function App() {
             <Card title="Storyboard preview" subtitle="Live cinematic scene preview with autoplay controls">
               <div className="space-y-4">
                 <div className="relative overflow-hidden rounded-[1.75rem] border border-white/10 bg-slate-950/80 p-4">
-                  {activeScene ? <img src={activeScene.imageUrl} alt={activeScene.title} className="mx-auto aspect-[9/16] max-h-[720px] rounded-[1.5rem] object-cover" /> : null}
+                  {activeScene ? (
+                    activeScene.runwayVideoUrl ? (
+                      <video 
+                        src={activeScene.runwayVideoUrl} 
+                        autoPlay 
+                        loop 
+                        muted 
+                        playsInline
+                        className="mx-auto aspect-[9/16] max-h-[720px] rounded-[1.5rem] object-cover" 
+                      />
+                    ) : (
+                      <img src={activeScene.imageUrl} alt={activeScene.title} className="mx-auto aspect-[9/16] max-h-[720px] rounded-[1.5rem] object-cover" />
+                    )
+                  ) : null}
                   <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
                     <div>
                       <p className="text-lg font-semibold text-white">{activeScene?.title ?? "No scene"}</p>
