@@ -1,8 +1,8 @@
 export function withCors(res) {
   res.setHeader("Access-Control-Allow-Credentials", "true");
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.setHeader("Access-Control-Allow-Methods", "POST,GET,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Runway-Version");
 }
 
 export function handleOptions(req, res) {
@@ -16,6 +16,10 @@ export function handleOptions(req, res) {
 
 export function getOpenAiKey() {
   return process.env.OPENAI_API_KEY || "";
+}
+
+export function getPollinationsKey() {
+  return process.env.POLLINATIONS_API_KEY || "";
 }
 
 export function ensureOpenAiKey(res) {

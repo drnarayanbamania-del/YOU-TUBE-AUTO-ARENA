@@ -46,7 +46,8 @@ export async function runRunwayHandler(req, res, executor) {
 }
 
 export async function runwayRequest({ apiKey, method, endpoint, body }) {
-  const response = await fetch(`https://api.runwayml.com/v1${endpoint}`, {
+  // Use api.dev.runwayml.com for reliable Gen-3 Alpha API access
+  const response = await fetch(`https://api.dev.runwayml.com/v1${endpoint}`, {
     method,
     headers: {
       "Content-Type": "application/json",
@@ -59,7 +60,10 @@ export async function runwayRequest({ apiKey, method, endpoint, body }) {
   const data = await response.json().catch(() => ({}));
 
   if (!response.ok) {
-    const message = data?.error?.message || data?.message || `Runway API failed with ${response.status}`;
+    let message = data?.error?.message || data?.message || `Runway API failed with ${response.status}`;
+    if (response.status === 401) {
+      message = "Runway API Error: 401 Unauthorized. Your API key might be missing credits or waitlist access. Note: API credits are separate from Web credits.";
+    }
     throw new Error(message);
   }
 

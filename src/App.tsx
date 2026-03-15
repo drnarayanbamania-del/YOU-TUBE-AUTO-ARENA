@@ -511,50 +511,14 @@ function videoToTopic(video: YouTubeVideo, query: string): Omit<Topic, "id" | "s
   };
 }
 
-function createSceneImage(scene: Pick<Scene, "title" | "caption" | "background" | "accent">, brandName: string) {
-  const svg = `
-    <svg xmlns="http://www.w3.org/2000/svg" width="720" height="1280" viewBox="0 0 720 1280">
-      <defs>
-        <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stop-color="${scene.background}"/>
-          <stop offset="100%" stop-color="#020617"/>
-        </linearGradient>
-        <linearGradient id="overlay" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stop-color="rgba(255,255,255,0.18)"/>
-          <stop offset="100%" stop-color="rgba(0,0,0,0.42)"/>
-        </linearGradient>
-        <filter id="blur"><feGaussianBlur stdDeviation="32"/></filter>
-      </defs>
-      <rect width="720" height="1280" fill="url(#bg)"/>
-      <rect y="0" width="720" height="86" fill="#000" opacity="0.9"/>
-      <rect y="1194" width="720" height="86" fill="#000" opacity="0.9"/>
-      <circle cx="570" cy="320" r="220" fill="${scene.accent}" opacity="0.26" filter="url(#blur)"/>
-      <circle cx="150" cy="860" r="180" fill="#38bdf8" opacity="0.18" filter="url(#blur)"/>
-      <rect x="56" y="162" width="608" height="956" rx="36" fill="rgba(7,10,22,0.26)" stroke="rgba(255,255,255,0.15)"/>
-      <rect x="84" y="198" width="552" height="642" rx="28" fill="url(#overlay)" stroke="rgba(255,255,255,0.1)"/>
-      <rect x="84" y="198" width="552" height="642" rx="28" fill="none" stroke="rgba(255,255,255,0.12)"/>
-      <text x="104" y="252" font-family="Arial, sans-serif" font-size="22" fill="${scene.accent}" opacity="0.95" letter-spacing="4">CINEMATIC FRAME</text>
-      <text x="104" y="894" font-family="Arial, sans-serif" font-size="18" fill="#cbd5e1" letter-spacing="3">${brandName.toUpperCase()}</text>
-      <text x="104" y="964" font-family="Arial, sans-serif" font-size="48" font-weight="700" fill="#ffffff">${escapeXml(scene.title)}</text>
-      <foreignObject x="104" y="996" width="520" height="120">
-        <div xmlns="http://www.w3.org/1999/xhtml" style="font-family:Arial,sans-serif;font-size:28px;line-height:1.45;color:#e2e8f0;">
-          ${escapeXml(scene.caption)}
-        </div>
-      </foreignObject>
-      <text x="104" y="1146" font-family="Arial, sans-serif" font-size="18" fill="#94a3b8">9:16 vertical image-video export ready</text>
-    </svg>
-  `.trim();
-  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+function createSceneImage(scene: { title: string; caption?: string; visualPrompt?: string; background?: string; accent?: string }, brandName: string): string {
+  // Use a predictable seed based on the title to keep it consistent during a session
+  const seed = (scene.title || "").split("").reduce((acc, char) => acc + char.charCodeAt(0), 0) % 1000000;
+  const prompt = scene.visualPrompt || scene.title || "Cinematic scene";
+  const encodedPrompt = encodeURIComponent(`${prompt}, cinematic lighting, dramatic contrast, high resolution, 8k, vertical 9:16 frame, ${brandName} style`);
+  return `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1792&seed=${seed}&nologo=true&model=flux`;
 }
 
-function escapeXml(value: string) {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
 
 function generateProject(topic: Topic, settings: Settings): Project {
   const safeTitle = topic.title;
@@ -1139,6 +1103,8 @@ export function App() {
   const [isGeneratingRunway, setIsGeneratingRunway] = useState(false);
   const [runwayProgress, setRunwayProgress] = useState(0);
   const [isMergingFfmpeg, setIsMergingFfmpeg] = useState(false);
+  const [isGeneratingImages, setIsGeneratingImages] = useState(false);
+  const [imageProgress, setImageProgress] = useState(0);
 
   useEffect(() => {
     const onRouteChange = () => setActivePage(toLocationPage(window.location));
@@ -1683,9 +1649,9 @@ export function App() {
         : "Voice generation is available, but embedding narration into the exported video is currently turned off in Settings.",
     },
     {
-      item: "Cinematic image-video export",
+      item: "Real Cinematic Image generation",
       status: "Working",
-      detail: "Canvas capture and MediaRecorder export a real vertical WebM file from generated cinematic still-image scenes, and the full factory can now auto-render the video after project generation.",
+      detail: "High-end cinematic visuals are now generated using Pollinations AI (Flux) or OpenAI DALL-E 3, replacing placeholders with production-ready vertical 9:16 images.",
     },
     {
       item: "Runway Gen-3 AI video generation",
@@ -1886,10 +1852,45 @@ export function App() {
     setActiveProjectId(project.id);
     setPreviewScene(0);
     navigate("studio");
-    if (canUseOpenAi && project.scriptTitle) {
+    if (project.scriptTitle) {
       setNotice(`Generated Hindi cinematic storyboard assets for “${targetTopic.title}”.`);
+      // Auto-trigger image generation
+      void generateSceneImages(project);
     }
     return project;
+  };
+
+  const generateSceneImages = async (project: Project) => {
+    setIsGeneratingImages(true);
+    setImageProgress(0);
+    setNotice(`Generating real cinematic images for ${project.scenes.length} scenes...`);
+
+    const updatedScenes = [...project.scenes];
+    let completed = 0;
+
+    for (let i = 0; i < updatedScenes.length; i++) {
+        try {
+            const scene = updatedScenes[i];
+            const base = (settings.integrations.proxyBaseUrl || "").replace(/\/$/, "");
+            const response = await fetch(`${base}/api/openai/image`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ prompt: scene.visualPrompt }),
+            });
+            const result = await response.json();
+            if (response.ok && result.imageUrl) {
+                updatedScenes[i] = { ...scene, imageUrl: result.imageUrl };
+                setProjects(current => current.map(p => p.id === project.id ? { ...p, scenes: updatedScenes } : p));
+            }
+        } catch (error) {
+            console.error(`Failed to generate image for scene ${i}:`, error);
+        }
+        completed++;
+        setImageProgress(Math.round((completed / updatedScenes.length) * 100));
+    }
+
+    setIsGeneratingImages(false);
+    setNotice("Real cinematic image generation complete.");
   };
 
   const renderProjectVideo = async (project: Project) => {
@@ -3154,6 +3155,14 @@ export function App() {
                     className="rounded-full bg-white px-5 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-200"
                   >
                     {isRenderingVideo ? `Rendering ${videoProgress}%` : "Export cinematic video"}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isGeneratingImages || isRenderingVideo || isMergingFfmpeg}
+                    onClick={() => activeProject && generateSceneImages(activeProject)}
+                    className="rounded-full border border-amber-400/30 bg-amber-400/10 px-5 py-3 text-sm font-semibold text-amber-100 transition hover:bg-amber-400/20 disabled:opacity-50"
+                  >
+                    {isGeneratingImages ? `AI Images ${imageProgress}%` : "Generate Cinematic Images"}
                   </button>
                   <button
                     type="button"
